@@ -211,6 +211,7 @@ async function verifyPayment(response: RazorpaySuccessResponse) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(response),
   });
+  console.log("verification response status", verifyResponse.status);
 
   const body = await verifyResponse.json();
   if (!verifyResponse.ok) {
@@ -225,6 +226,7 @@ function openCheckout(
   amountRupees: string,
   setResult: (result: PaymentResult) => void,
 ) {
+  let successCallbackFired = false;
   const checkout = new window.Razorpay!({
     key: order.razorpay_key_id,
     amount: order.amount,
@@ -233,8 +235,15 @@ function openCheckout(
     name: "RevenueRescue AI",
     description: "Revenue Recovery Test Payment",
     handler: async (response) => {
+      successCallbackFired = true;
+      console.log("Razorpay success callback fired", {
+        hasPaymentId: Boolean(response.razorpay_payment_id),
+        hasOrderId: Boolean(response.razorpay_order_id),
+        hasSignature: Boolean(response.razorpay_signature),
+      });
       setResult({ status: "loading", message: "Verifying payment..." });
       try {
+        console.log("Calling backend verification");
         const verified = await verifyPayment(response);
         setResult({
           status: "verified",
@@ -248,11 +257,17 @@ function openCheckout(
       }
     },
     modal: {
-      ondismiss: () => setResult({ status: "error", message: "Payment cancelled or checkout closed" }),
+      ondismiss: () => {
+        if (successCallbackFired) {
+          return;
+        }
+        setResult({ status: "error", message: "Payment cancelled or checkout closed" });
+      },
     },
   });
 
   checkout.open();
+  console.log("Checkout opened");
 }
 
 function loadRazorpayCheckout() {

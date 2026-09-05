@@ -29,6 +29,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .turbo/
+frontend/AGENTS.md
+frontend/CLAUDE.md
 
 # IDE / OS
 .idea/
