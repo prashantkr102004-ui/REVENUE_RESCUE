@@ -27,3 +27,12 @@ class VerifyRazorpayPaymentResponse(BaseModel):
     status: str
     payment_id: uuid.UUID
     order_id: uuid.UUID
+
+
+class OrderPaymentStateResponse(BaseModel):
+    status: str | None
+    failure_reason: str | None
+    payment_method: str | None
+    external_payment_id: str | None
+    amount: int
+    currency: str

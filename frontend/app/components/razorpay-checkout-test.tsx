@@ -16,6 +16,15 @@ type VerifyPaymentResponse = {
   order_id: string;
 };
 
+type OrderPaymentStateResponse = {
+  status: string | null;
+  failure_reason: string | null;
+  payment_method: string | null;
+  external_payment_id: string | null;
+  amount: number;
+  currency: string;
+};
+
 type DemoCustomerResponse = {
   customer_id: string;
   name: string | null;
@@ -26,6 +35,17 @@ type RazorpaySuccessResponse = {
   razorpay_payment_id: string;
   razorpay_order_id: string;
   razorpay_signature: string;
+};
+
+type RazorpayFailureResponse = {
+  error?: {
+    description?: string;
+    reason?: string;
+    metadata?: {
+      payment_id?: string;
+      order_id?: string;
+    };
+  };
 };
 
 type RazorpayOptions = {
@@ -43,7 +63,10 @@ type RazorpayOptions = {
 
 declare global {
   interface Window {
-    Razorpay?: new (options: RazorpayOptions) => { open: () => void };
+    Razorpay?: new (options: RazorpayOptions) => {
+      on: (event: "payment.failed", callback: (response: RazorpayFailureResponse) => void) => void;
+      open: () => void;
+    };
   }
 }
 
@@ -51,6 +74,13 @@ type PaymentResult =
   | { status: "idle" }
   | { status: "loading"; message: string }
   | { status: "verified"; amount: string; paymentId: string; orderId: string; internalPaymentId: string }
+  | {
+      status: "failed";
+      amount: string;
+      failureReason: string;
+      paymentMethod: string;
+      paymentId: string;
+    }
   | { status: "error"; message: string };
 
 export function RazorpayCheckoutTest() {
@@ -156,6 +186,34 @@ function ResultPanel({ result }: { result: PaymentResult }) {
     return <p className="mt-5 rounded-md bg-rose-50 px-4 py-3 text-sm text-rose-700">{result.message}</p>;
   }
 
+  if (result.status === "failed") {
+    return (
+      <div className="mt-5 space-y-4">
+        <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+          <p className="font-semibold tracking-wide">PAYMENT FAILED</p>
+          <dl className="mt-3 space-y-2">
+            <ResultRow label="Amount" value={result.amount} />
+            <ResultRow label="Payment Status" value="Failed" />
+            <ResultRow label="Failure Reason" value={result.failureReason} />
+            <ResultRow label="Payment Method" value={result.paymentMethod} />
+            <ResultRow label="Razorpay Payment ID" value={result.paymentId} />
+          </dl>
+        </div>
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <p className="font-semibold tracking-wide">REVENUE RESCUE</p>
+          <dl className="mt-3 space-y-2">
+            <ResultRow label="Failure Detected" value="Yes" />
+            <ResultRow label="Recovery Status" value="Pending Analysis" />
+            <ResultRow
+              label="Next Step"
+              value="Recovery engine will classify the failure and determine the best recovery action."
+            />
+          </dl>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-5 rounded-md bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
       <p className="font-semibold">Payment Verified</p>
@@ -221,12 +279,24 @@ async function verifyPayment(response: RazorpaySuccessResponse) {
   return body as VerifyPaymentResponse;
 }
 
+async function getOrderPaymentState(internalOrderId: string) {
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+  const response = await fetch(`${apiBaseUrl}/api/payments/order/${internalOrderId}`);
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(formatApiError(body, "Could not load payment state."));
+  }
+
+  return body as OrderPaymentStateResponse;
+}
+
 function openCheckout(
   order: CreateOrderResponse,
   amountRupees: string,
   setResult: (result: PaymentResult) => void,
 ) {
   let successCallbackFired = false;
+  let failureCallbackFired = false;
   const checkout = new window.Razorpay!({
     key: order.razorpay_key_id,
     amount: order.amount,
@@ -258,12 +328,43 @@ function openCheckout(
     },
     modal: {
       ondismiss: () => {
-        if (successCallbackFired) {
+        if (successCallbackFired || failureCallbackFired) {
           return;
         }
         setResult({ status: "error", message: "Payment cancelled or checkout closed" });
       },
     },
+  });
+
+  checkout.on("payment.failed", async (response) => {
+    failureCallbackFired = true;
+    console.log("Razorpay payment.failed callback fired", {
+      hasPaymentId: Boolean(response.error?.metadata?.payment_id),
+      hasOrderId: Boolean(response.error?.metadata?.order_id),
+    });
+    setResult({ status: "loading", message: "Checking failed payment state..." });
+
+    const fallbackReason = response.error?.description ?? response.error?.reason ?? "Failure reason unavailable";
+    const fallbackPaymentId = response.error?.metadata?.payment_id ?? "Not available";
+
+    try {
+      const paymentState = await getOrderPaymentState(order.internal_order_id);
+      setResult({
+        status: "failed",
+        amount: formatMoney(paymentState.currency, paymentState.amount),
+        failureReason: paymentState.failure_reason ?? fallbackReason,
+        paymentMethod: paymentState.payment_method ?? "Not available",
+        paymentId: paymentState.external_payment_id ?? fallbackPaymentId,
+      });
+    } catch {
+      setResult({
+        status: "failed",
+        amount: formatMoney(order.currency, order.amount),
+        failureReason: fallbackReason,
+        paymentMethod: "Not available",
+        paymentId: fallbackPaymentId,
+      });
+    }
   });
 
   checkout.open();
@@ -297,6 +398,12 @@ function rupeesToPaise(value: string) {
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+function formatMoney(currency: string, amountInSmallestUnit: number) {
+  const rupees = Math.trunc(amountInSmallestUnit / 100);
+  const paise = Math.abs(amountInSmallestUnit % 100).toString().padStart(2, "0");
+  return `${currency} ${rupees}.${paise}`;
 }
 
 function formatApiError(body: unknown, fallback: string) {

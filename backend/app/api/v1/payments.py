@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -9,6 +11,7 @@ from app.models.payment import Payment, PaymentStatus
 from app.schemas.payment import (
     CreateRazorpayOrderRequest,
     CreateRazorpayOrderResponse,
+    OrderPaymentStateResponse,
     VerifyRazorpayPaymentRequest,
     VerifyRazorpayPaymentResponse,
 )
@@ -67,6 +70,36 @@ def create_order(
         amount=order.amount,
         currency=order.currency,
         razorpay_key_id=razorpay_service.key_id,
+    )
+
+
+@router.get("/order/{internal_order_id}", response_model=OrderPaymentStateResponse)
+def get_order_payment_state(
+    internal_order_id: str,
+    db: Session = Depends(get_db),
+) -> OrderPaymentStateResponse:
+    try:
+        order_id = uuid.UUID(internal_order_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid order ID") from exc
+
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    payment = db.scalar(
+        select(Payment)
+        .where(Payment.order_id == order.id)
+        .order_by(Payment.updated_at.desc(), Payment.created_at.desc())
+    )
+
+    return OrderPaymentStateResponse(
+        status=payment.status.value if payment else None,
+        failure_reason=payment.failure_reason if payment else None,
+        payment_method=payment.payment_method if payment else None,
+        external_payment_id=payment.external_payment_id if payment else None,
+        amount=payment.amount if payment else order.amount,
+        currency=payment.currency if payment else order.currency,
     )
 
 

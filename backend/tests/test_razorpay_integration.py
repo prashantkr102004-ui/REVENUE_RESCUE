@@ -99,6 +99,52 @@ def test_valid_payment_failed_webhook_creates_payment(client: TestClient, db_ses
     assert payment.failure_reason == "Payment failed due to insufficient funds."
 
 
+def test_failed_payment_state_response(client: TestClient, db_session: Session) -> None:
+    order = _create_order(db_session, external_order_id="order_failed_state_123")
+    payment = Payment(
+        merchant_id=order.merchant_id,
+        customer_id=order.customer_id,
+        order_id=order.id,
+        external_payment_id="pay_failed_state_123",
+        amount=499900,
+        currency="INR",
+        payment_method="upi",
+        status=PaymentStatus.failed,
+        failure_reason="Payment failed due to insufficient funds.",
+        retry_count=0,
+    )
+    db_session.add(payment)
+    db_session.commit()
+
+    response = client.get(f"/api/payments/order/{order.id}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "failed",
+        "failure_reason": "Payment failed due to insufficient funds.",
+        "payment_method": "upi",
+        "external_payment_id": "pay_failed_state_123",
+        "amount": 499900,
+        "currency": "INR",
+    }
+
+
+def test_order_payment_state_returns_empty_payment_state(client: TestClient, db_session: Session) -> None:
+    order = _create_order(db_session, external_order_id="order_no_payment_state_123")
+
+    response = client.get(f"/api/payments/order/{order.id}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": None,
+        "failure_reason": None,
+        "payment_method": None,
+        "external_payment_id": None,
+        "amount": 499900,
+        "currency": "INR",
+    }
+
+
 def test_valid_payment_captured_webhook_updates_payment(client: TestClient, db_session: Session) -> None:
     order = _create_order(db_session, external_order_id="order_captured_123")
     existing_payment = Payment(
@@ -188,6 +234,10 @@ def test_valid_payment_verification_creates_successful_payment(client: TestClien
     assert payment.order_id == order.id
     assert payment.amount == 499900
     assert payment.currency == "INR"
+
+    state_response = client.get(f"/api/payments/order/{order.id}")
+    assert state_response.status_code == 200
+    assert state_response.json()["status"] == "successful"
 
 
 def test_invalid_payment_signature_returns_400(client: TestClient) -> None:
